@@ -1,4 +1,0 @@
-[0.012s] Invoking command in '/home/1_fri/bwi_ros2/src/fri_autonomous_template/build/nav_goals': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/1_fri/bwi_ros2/src/fri_autonomous_template/build/nav_goals -- -j12 -l12
-[0.054s] [ 50%] [32mBuilding CXX object CMakeFiles/send_goal.dir/src/send_goal.cpp.o[0m
-[4.149s] [100%] [32m[1mLinking CXX executable send_goal[0m
-[4.325s] [100%] Built target send_goal

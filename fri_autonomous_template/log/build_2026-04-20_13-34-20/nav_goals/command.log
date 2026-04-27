@@ -1,1 +1,0 @@
-Invoking command in '/home/1_fri/bwi_ros2/src/fri_autonomous_template/build/nav_goals': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/1_fri/bwi_ros2/src/fri_autonomous_template/build/nav_goals -- -j12 -l12

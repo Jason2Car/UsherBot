@@ -1,1 +1,0 @@
-Invoking command in '/home/1_fri/bwi_ros2/src/fri_autonomous_template/build/nav_goals': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/1_fri/bwi_ros2/src/fri_autonomous_template/nav_goals -DCMAKE_INSTALL_PREFIX=/home/1_fri/bwi_ros2/src/fri_autonomous_template/install/nav_goals

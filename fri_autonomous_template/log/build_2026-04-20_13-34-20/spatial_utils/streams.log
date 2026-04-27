@@ -1,4 +1,0 @@
-[0.016s] Invoking command in '/home/1_fri/bwi_ros2/src/fri_autonomous_template/build/spatial_utils': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/1_fri/bwi_ros2/src/fri_autonomous_template/build/spatial_utils -- -j12 -l12
-[0.054s] [ 50%] [32mBuilding CXX object CMakeFiles/spatial_utils.dir/src/transform_util.cpp.o[0m
-[3.498s] [100%] [32m[1mLinking CXX static library libspatial_utils.a[0m
-[3.656s] [100%] Built target spatial_utils
