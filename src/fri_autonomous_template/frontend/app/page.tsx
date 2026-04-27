@@ -13,8 +13,29 @@ type Reservation = {
   user_id: string | null;
   checked_in: boolean;
   reserved_for: string;
+  end_time: string | null;
+  nav_status?: string | null;
   created_at: string;
 };
+
+const RESERVATION_DURATION_MS = 60 * 60 * 1000;
+const INACTIVE_NAV_STATUSES = new Set(['aborted', 'rejected', 'canceled', 'failed']);
+
+function toDatetimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function addHoursToLocal(local: string, hours: number): string {
+  const d = new Date(local);
+  d.setTime(d.getTime() + hours * 60 * 60 * 1000);
+  return toDatetimeLocal(d);
+}
+
+function reservationEndMs(r: { reserved_for: string; end_time: string | null }): number {
+  if (r.end_time) return new Date(r.end_time).getTime();
+  return new Date(r.reserved_for).getTime() + RESERVATION_DURATION_MS;
+}
 
 type CheckinState =
   | { phase: 'idle' }
@@ -28,11 +49,12 @@ const CHECK_IN_WINDOW_AFTER_MS = 60 * 60 * 1000;
 type SeatLayout = { seat: number; row: number; x: number; y: number };
 
 const SEATS: SeatLayout[] = [
-  { seat: 1, row: 1, x: 0.0, y: 1.0 },
-  { seat: 2, row: 1, x: 1.0, y: 1.0 },
-  { seat: 3, row: 1, x: 2.0, y: 1.0 },
-  { seat: 4, row: 2, x: 0.0, y: 0.0 },
-  { seat: 5, row: 2, x: 1.0, y: 0.0 },
+  { seat: 1, row: 1, x: 4.036328315734863, y: 6.334454536437988 },
+  { seat: 2, row: 1, x: 3.130171775817871, y: 3.6995787620544434 },
+  { seat: 3, row: 1, x: 3.3696537017822266, y: 0.17481458187103271 },
+  { seat: 4, row: 2, x: 3.3192801475524902, y: -3.300684928894043 },
+  { seat: 5, row: 2, x: -1.7559852600097656, y: 5.08515739440918 },
+  { seat: 6, row: 2, x: 5.855883598327637, y: -4.836338043212891 },
 ];
 
 function classifyReservation(r: Reservation, nowMs: number): 'current' | 'upcoming' | 'missed' {
@@ -60,6 +82,9 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState('');
   const [showReservation, setShowReservation] = useState(false);
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null);
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
+  const [allActiveReservations, setAllActiveReservations] = useState<Reservation[]>([]);
   const [checkin, setCheckin] = useState<CheckinState>({ phase: 'idle' });
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
@@ -96,6 +121,63 @@ export default function Home() {
     setReservations(data as Reservation[]);
   }, []);
 
+  const isSeatBusy = useCallback(
+    (seatNumber: number, startISO: string, endISO: string): boolean => {
+      if (!startISO || !endISO) return false;
+      const start = new Date(startISO).getTime();
+      const end = new Date(endISO).getTime();
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return false;
+      return allActiveReservations.some((r) => {
+        if (r.seat_number !== seatNumber) return false;
+        if (r.nav_status && INACTIVE_NAV_STATUSES.has(r.nav_status)) return false;
+        const rStart = new Date(r.reserved_for).getTime();
+        const rEnd = reservationEndMs(r);
+        return rStart < end && rEnd > start;
+      });
+    },
+    [allActiveReservations],
+  );
+
+  const openReservationModal = async () => {
+    setShowReservation(true);
+    setSelectedSeat(null);
+    setErrorMsg('');
+    const now = new Date();
+    now.setMinutes(Math.ceil(now.getMinutes() / 15) * 15, 0, 0);
+    const startLocal = toDatetimeLocal(now);
+    setStartTime(startLocal);
+    setEndTime(addHoursToLocal(startLocal, 1));
+
+    const { data } = await supabase
+      .from('requests')
+      .select('*')
+      .gte('end_time', new Date().toISOString());
+    setAllActiveReservations((data ?? []) as Reservation[]);
+  };
+
+  const closeReservationModal = () => {
+    setShowReservation(false);
+    setSelectedSeat(null);
+    setStartTime('');
+    setEndTime('');
+  };
+
+  const onStartTimeChange = (newStart: string) => {
+    const newEnd = addHoursToLocal(newStart, 1);
+    setStartTime(newStart);
+    setEndTime(newEnd);
+    if (selectedSeat !== null && isSeatBusy(selectedSeat, newStart, newEnd)) {
+      setSelectedSeat(null);
+    }
+  };
+
+  const onEndTimeChange = (newEnd: string) => {
+    setEndTime(newEnd);
+    if (selectedSeat !== null && isSeatBusy(selectedSeat, startTime, newEnd)) {
+      setSelectedSeat(null);
+    }
+  };
+
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
@@ -109,23 +191,39 @@ export default function Home() {
   const handleCreateReservation = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setErrorMsg('');
-    const formData = new FormData(e.currentTarget);
     if (selectedSeat === null) {
       setErrorMsg('Please select a seat.');
       return;
     }
-    const x_coord = Number(formData.get('x_coord'));
-    const y_coord = Number(formData.get('y_coord'));
-    const reservedForLocal = formData.get('reserved_for') as string;
-    const reserved_for = new Date(reservedForLocal).toISOString();
+    if (!startTime || !endTime) {
+      setErrorMsg('Please pick a start and end time.');
+      return;
+    }
+    if (new Date(endTime).getTime() <= new Date(startTime).getTime()) {
+      setErrorMsg('End time must be after start time.');
+      return;
+    }
+    if (isSeatBusy(selectedSeat, startTime, endTime)) {
+      setErrorMsg('That seat is already taken for this time window.');
+      return;
+    }
+    const seat = SEATS.find((s) => s.seat === selectedSeat);
+    if (!seat) {
+      setErrorMsg('Unknown seat.');
+      return;
+    }
+
+    const reserved_for = new Date(startTime).toISOString();
+    const end_time = new Date(endTime).toISOString();
 
     const { error } = await supabase.from('requests').insert({
       seat_number: selectedSeat,
-      x_coord,
-      y_coord,
+      x_coord: seat.x,
+      y_coord: seat.y,
       taken: true,
       user_id: utid,
       reserved_for,
+      end_time,
     });
 
     if (error) {
@@ -133,8 +231,7 @@ export default function Home() {
       return;
     }
 
-    setShowReservation(false);
-    setSelectedSeat(null);
+    closeReservationModal();
     await fetchReservations(utid);
   };
 
@@ -160,6 +257,30 @@ export default function Home() {
 
   const handleDoneCheckin = async () => {
     setCheckin({ phase: 'idle' });
+    await fetchReservations(utid);
+  };
+
+  const handleRemoveReservation = async (reservation: Reservation) => {
+    const ok = window.confirm(
+      `Remove reservation for seat ${reservation.seat_number} on ${formatDateTime(reservation.reserved_for)}?`,
+    );
+    if (!ok) return;
+    setErrorMsg('');
+    const { data, error } = await supabase
+      .from('requests')
+      .delete()
+      .eq('id', reservation.id)
+      .select();
+    if (error) {
+      setErrorMsg(error.message);
+      return;
+    }
+    if (!data || data.length === 0) {
+      setErrorMsg(
+        "Couldn't remove — Supabase blocked the delete. Add a DELETE row-level-security policy on the `requests` table.",
+      );
+      return;
+    }
     await fetchReservations(utid);
   };
 
@@ -264,7 +385,7 @@ export default function Home() {
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-500 hidden sm:inline">{utid}</span>
             <button
-              onClick={() => setShowReservation(true)}
+              onClick={openReservationModal}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition shadow-sm"
             >
               + New Reservation
@@ -293,7 +414,7 @@ export default function Home() {
           <div className="p-12 bg-white border border-gray-100 rounded-2xl text-center">
             <p className="text-gray-500 mb-4">No reservations yet.</p>
             <button
-              onClick={() => setShowReservation(true)}
+              onClick={openReservationModal}
               className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition shadow-sm"
             >
               Make a Reservation
@@ -338,6 +459,12 @@ export default function Home() {
                       >
                         Check In
                       </button>
+                      <button
+                        onClick={() => handleRemoveReservation(r)}
+                        className="mt-2 w-full px-4 py-2.5 bg-white border border-gray-200 text-gray-600 hover:text-red-600 hover:border-red-200 text-sm font-medium rounded-lg transition"
+                      >
+                        Remove
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -380,6 +507,12 @@ export default function Home() {
                       >
                         Available 15 min before
                       </button>
+                      <button
+                        onClick={() => handleRemoveReservation(r)}
+                        className="mt-2 w-full px-4 py-2.5 bg-white border border-gray-200 text-gray-600 hover:text-red-600 hover:border-red-200 text-sm font-medium rounded-lg transition"
+                      >
+                        Remove
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -393,57 +526,72 @@ export default function Home() {
         <>
           <div
             className="fixed inset-0 bg-gray-900/40 z-40"
-            onClick={() => {
-              setShowReservation(false);
-              setSelectedSeat(null);
-            }}
+            onClick={closeReservationModal}
           />
-          <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
-            <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
-              <div className="flex justify-between items-center mb-6">
+          <div className="fixed inset-0 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+            <div className="w-full sm:max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-xl p-5 sm:p-8 max-h-[92vh] overflow-y-auto">
+              <div className="flex justify-between items-center mb-5 sm:mb-6">
                 <h2 className="text-xl font-semibold text-gray-900">New Reservation</h2>
                 <button
-                  onClick={() => {
-                    setShowReservation(false);
-                    setSelectedSeat(null);
-                  }}
-                  className="text-gray-400 hover:text-gray-700 text-2xl leading-none"
+                  onClick={closeReservationModal}
+                  className="text-gray-400 hover:text-gray-700 text-3xl leading-none w-10 h-10 flex items-center justify-center -mr-2"
                   aria-label="Close"
                 >
                   ×
                 </button>
               </div>
               <form onSubmit={handleCreateReservation} className="space-y-4">
-                <div>
-                  <label htmlFor="reserved_for" className="block text-sm font-medium text-gray-700 mb-2">
-                    Reservation Time
-                  </label>
-                  <input
-                    type="datetime-local"
-                    id="reserved_for"
-                    name="reserved_for"
-                    required
-                    className="w-full px-4 py-3 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-400 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                  <div>
+                    <label htmlFor="start_time" className="block text-sm font-medium text-gray-700 mb-2">
+                      Start Time
+                    </label>
+                    <input
+                      type="datetime-local"
+                      id="start_time"
+                      value={startTime}
+                      onChange={(e) => onStartTimeChange(e.target.value)}
+                      required
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-base text-gray-900 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="end_time" className="block text-sm font-medium text-gray-700 mb-2">
+                      End Time
+                    </label>
+                    <input
+                      type="datetime-local"
+                      id="end_time"
+                      value={endTime}
+                      onChange={(e) => onEndTimeChange(e.target.value)}
+                      required
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-base text-gray-900 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Select a Seat
                   </label>
-                  <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
+                  <div className="p-3 sm:p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
                     {[1, 2].map((row) => (
-                      <div key={row} className="flex justify-center gap-2">
+                      <div key={row} className="grid grid-cols-3 gap-2">
                         {SEATS.filter((s) => s.row === row).map((s) => {
                           const isSelected = selectedSeat === s.seat;
+                          const busy = isSeatBusy(s.seat, startTime, endTime);
                           return (
                             <button
                               key={s.seat}
                               type="button"
+                              disabled={busy}
                               onClick={() => setSelectedSeat(s.seat)}
-                              className={`w-16 h-16 rounded-lg font-semibold text-lg transition border-2 ${
-                                isSelected
+                              title={busy ? 'Already reserved for this time' : `Seat ${s.seat}`}
+                              className={`aspect-square rounded-lg font-semibold text-lg transition border-2 ${
+                                busy
+                                  ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed line-through'
+                                  : isSelected
                                   ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
-                                  : 'bg-white border-gray-200 text-gray-700 hover:border-blue-300'
+                                  : 'bg-white border-gray-200 text-gray-700 hover:border-blue-300 active:bg-gray-50'
                               }`}
                             >
                               {s.seat}
@@ -453,39 +601,20 @@ export default function Home() {
                       </div>
                     ))}
                   </div>
-                  {selectedSeat !== null && (
-                    <p className="mt-2 text-sm text-gray-500">Seat {selectedSeat} selected</p>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="x_coord" className="block text-sm font-medium text-gray-700 mb-2">
-                      X Coordinate
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      id="x_coord"
-                      name="x_coord"
-                      placeholder="0.0"
-                      required
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-400 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="y_coord" className="block text-sm font-medium text-gray-700 mb-2">
-                      Y Coordinate
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      id="y_coord"
-                      name="y_coord"
-                      placeholder="0.0"
-                      required
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-400 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
-                    />
-                  </div>
+                  {selectedSeat !== null && (() => {
+                    const s = SEATS.find((x) => x.seat === selectedSeat);
+                    if (!s) return null;
+                    return (
+                      <div className="mt-3 px-4 py-3 bg-blue-50 border border-blue-100 rounded-xl">
+                        <p className="text-xs uppercase tracking-wide text-blue-600 font-semibold mb-1">
+                          Seat {s.seat}
+                        </p>
+                        <p className="text-sm text-gray-700 font-mono">
+                          x = {s.x.toFixed(3)}, y = {s.y.toFixed(3)}
+                        </p>
+                      </div>
+                    );
+                  })()}
                 </div>
                 <button
                   type="submit"
